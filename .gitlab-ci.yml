@@ -1,0 +1,123 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  TAG_IMAGE_APP: $CI_REGISTRY_CPS/$CI_PROJECT_NAME/app/$CI_COMMIT_REF_NAME:$CI_COMMIT_SHORT_SHA
+  TAG_IMAGE_DATABASE: $CI_REGISTRY_CPS/$CI_PROJECT_NAME/database/$CI_COMMIT_REF_NAME:$CI_COMMIT_SHORT_SHA
+  AUTOR_COMMIT: $GITLAB_USER_NAME
+  ENTORNO: $CI_COMMIT_REF_NAME
+  ID_PROYECTO: $CI_PROJECT_ID
+  NOMBRE_PROYECTO: $CI_PROJECT_NAME
+  FECHA_COMMIT: $CI_COMMIT_TIMESTAMP
+
+#----- Build ----
+.Docker Template: &docker
+  retry:
+    max: 2
+    when: runner_system_failure
+  image: docker:20-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  services:
+    - name: docker:20-dind
+      alias: docker
+      command: ["--tls=false"]
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASS" "$CI_REGISTRY_CPS"
+#----- End  Template Docker ------
+
+#----- Build  App ------
+Build App:
+  <<: *docker
+  stage: build
+  tags:
+    - build
+  only:
+    - master
+    - dev  
+  script:
+    - docker build -f ./Dockerfile --pull -t "$TAG_IMAGE_APP" .
+    - docker push "$TAG_IMAGE_APP"
+#----- End Build  App ------
+
+#----- Build  BD ------
+.Build Base de Datos:
+  <<: *docker
+  stage: build
+  tags:
+    - build
+  only:
+    - master
+    - dev
+  script:
+    - docker build -f BaseDatos/Dockerfile --pull -t "$TAG_IMAGE_DATABASE" .
+    - docker push "$TAG_IMAGE_DATABASE"
+#---- End Build BD ----
+
+#----- Test ----
+Test App y BD:
+  image: alpine:latest
+  stage: test
+  only:
+    - master
+  tags:
+    - test
+  script:
+    - echo "test"
+#----- End Build ----
+
+#------ Deploy App ----
+.Deploy Template App: &deployApp
+  image: curlimages/curl:latest
+  stage: deploy
+  tags:
+    - deploy
+  script:
+    - 'curl --fail --request POST --form token=$TRIGGER_TOKEN --form ref=master --form "variables[TAG_IMAGE_APP]=${TAG_IMAGE_APP}" --form "variables[AUTOR_COMMIT]=${AUTOR_COMMIT}" --form "variables[ENTORNO]=${ENTORNO}" --form "variables[ID_PROYECTO]=${ID_PROYECTO}" --form "variables[NOMBRE_PROYECTO]=${NOMBRE_PROYECTO}" --form "variables[FECHA_COMMIT]=${FECHA_COMMIT}" "https://gitcps.ejercito.mil.ar/api/v4/projects/105/trigger/pipeline"'
+
+Deploy Dev - App:
+  <<: *deployApp
+  only:
+    - dev
+
+Deploy Prod - App:
+  <<: *deployApp
+  when: manual
+  only:
+    - master
+#------ End Deploy App ----
+
+#------ Deploy BD ----
+.Deploy Dev - BaseDatos:
+  <<: *docker
+  stage: deploy
+  tags:
+    - deploy
+  only:
+    - dev
+  script:
+    - docker pull $TAG_IMAGE_DATABASE
+    - docker run --rm $TAG_IMAGE_DATABASE -url=jdbc:jtds:sqlserver://$DB_DLLO_HOST:1433/$DB_DLLO_NAME -user=$DB_DLLO_USER -password=$DB_DLLO_PASS info
+    - docker run --rm $TAG_IMAGE_DATABASE -url=jdbc:jtds:sqlserver://$DB_DLLO_HOST:1433/$DB_DLLO_NAME -user=$DB_DLLO_USER -password=$DB_DLLO_PASS migrate
+    - docker run --rm $TAG_IMAGE_DATABASE -url=jdbc:jtds:sqlserver://$DB_DLLO_HOST:1433/$DB_DLLO_NAME -user=$DB_DLLO_USER -password=$DB_DLLO_PASS info
+
+.Deploy Prod - BaseDatos:
+  <<: *docker
+  stage: deploy
+  tags:
+    - deploy
+  when: manual
+  only:
+    - master
+  script:
+    - docker pull $TAG_IMAGE_DATABASE
+    - docker run --rm $TAG_IMAGE_DATABASE -url=jdbc:jtds:sqlserver://$DB_PROD_HOST:1433/$DB_PROD_NAME -user=$DB_PROD_USER -password=$DB_PROD_PASS info
+    - docker run --rm $TAG_IMAGE_DATABASE -url=jdbc:jtds:sqlserver://$DB_PROD_HOST:1433/$DB_PROD_NAME -user=$DB_PROD_USER -password=$DB_PROD_PASS migrate
+    - docker run --rm $TAG_IMAGE_DATABASE -url=jdbc:jtds:sqlserver://$DB_PROD_HOST:1433/$DB_PROD_NAME -user=$DB_PROD_USER -password=$DB_PROD_PASS info
+#----- End Deploy ----
+
+
